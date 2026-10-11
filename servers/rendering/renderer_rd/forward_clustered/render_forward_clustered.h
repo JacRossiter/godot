@@ -111,7 +111,7 @@ public:
 			Transform3D ssr_last_frame_transform;
 
 			RendererRD::SSEffects::SSILRenderBuffers ssil;
-			RendererRD::SSEffects::SSAORenderBuffers ssao;
+			RendererRD::SSEffects::AORenderBuffers ssao;
 			RendererRD::SSEffects::SSRRenderBuffers ssr;
 			RendererRD::SSEffects::SSCSRenderBuffers sscs;
 		} ss_effects_data;
