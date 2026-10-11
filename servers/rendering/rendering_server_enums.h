@@ -689,6 +689,8 @@ enum EnvironmentToneMapper {
 	ENV_TONE_MAPPER_FILMIC,
 	ENV_TONE_MAPPER_ACES,
 	ENV_TONE_MAPPER_AGX,
+	ENV_TONE_MAPPER_GT7,
+	ENV_TONE_MAPPER_UCHIMURA_AGX,
 };
 
 enum EnvironmentSSRRoughnessQuality {

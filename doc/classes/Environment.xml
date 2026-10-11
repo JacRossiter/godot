@@ -447,6 +447,12 @@
 		<constant name="TONE_MAPPER_AGX" value="4" enum="ToneMapper">
 			Uses an adjustable film-like tonemapping curve and desaturates bright values for a more realistic appearance. Better than other tonemappers at maintaining the hue of colors as they become brighter. The slowest tonemapping option.
 		</constant>
+		<constant name="TONE_MAPPER_GT7" value="5" enum="ToneMapper">
+			Uses the Gran Turismo 7 tonemapper (Polyphony Digital, SIGGRAPH 2025, MIT License) in its SDR configuration: a per-channel curve blended with a hue-preserving ICtCp luminance mapping (250 nits paper white, where 1.0 is 100 nits). [member Environment.tonemap_white] is ignored. Forward+ only; the Mobile and Compatibility renderers fall back to AgX.
+		</constant>
+		<constant name="TONE_MAPPER_UCHIMURA_AGX" value="6" enum="ToneMapper">
+			Uses Toni Macaroni's Uchimura-AgX tonemapper (MIT License): an AgX look mixed into the Uchimura (Gran Turismo Sport) curve. [member Environment.tonemap_white] is ignored. Forward+ only; the Mobile and Compatibility renderers fall back to AgX.
+		</constant>
 		<constant name="GLOW_BLEND_MODE_ADDITIVE" value="0" enum="GlowBlendMode">
 			Adds the glow effect to the scene.
 		</constant>

@@ -239,7 +239,11 @@ float RendererEnvironmentStorage::environment_get_white(RID p_env, bool p_limit_
 		// Filmic and ACES only support SDR; their white is stable regardless
 		// of output_max_value.
 		return MAX(1.0, env->white);
-	} else if (env->tone_mapper == RSE::ENV_TONE_MAPPER_AGX) {
+	} else if (env->tone_mapper == RSE::ENV_TONE_MAPPER_AGX || env->tone_mapper == RSE::ENV_TONE_MAPPER_GT7 || env->tone_mapper == RSE::ENV_TONE_MAPPER_UCHIMURA_AGX) {
+		// GT7 and Uchimura-AgX (Homestead) have fixed curves and ignore white in
+		// the Forward+ shader, but take the AgX path here so glow screen blending
+		// gets a sane white and the Mobile/Compatibility shaders, which fall back
+		// to AgX for these modes, get valid AgX parameters.
 		// AgX works best with a high white. 2.0 is the minimum required for
 		// good behavior with Mobile rendering method.
 		if (p_limit_agx_white) {
@@ -310,7 +314,9 @@ RendererEnvironmentStorage::TonemapParameters RendererEnvironmentStorage::enviro
 		white *= exposure_bias;
 		float white_tonemapped = (white * (white + A) - B) / (white * (C * white + D) + E);
 		tonemap_parameters.white_tonemapped = white_tonemapped;
-	} else if (env->tone_mapper == RSE::ENV_TONE_MAPPER_AGX) {
+	} else if (env->tone_mapper == RSE::ENV_TONE_MAPPER_AGX || env->tone_mapper == RSE::ENV_TONE_MAPPER_GT7 || env->tone_mapper == RSE::ENV_TONE_MAPPER_UCHIMURA_AGX) {
+		// GT7 and Uchimura-AgX need no CPU parameters in Forward+; AgX parameters
+		// are computed for them so the Mobile/Compatibility AgX fallback is valid.
 		// Calculate allenwp tonemapping curve parameters on the CPU to improve shader performance.
 		// Source and details: https://allenwp.com/blog/2025/05/29/allenwp-tonemapping-curve/
 

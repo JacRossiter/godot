@@ -237,11 +237,299 @@ vec3 srgb_to_linear(vec3 color) {
 	return mix(pow((color.rgb + a) * (1.0f / (vec3(1.0f) + a)), vec3(2.4f)), color.rgb * (1.0f / 12.92f), lessThan(color.rgb, vec3(0.04045f)));
 }
 
+// ---------------------------------------------------------------------------
+// Homestead P1: GT7 tone mapping.
+// Ported to GLSL from the GT7 Tone Mapping sample implementation
+// (gt7_tone_mapping.cpp v1.0, 2025-08-10) by Polyphony Digital, SIGGRAPH 2025.
+// ICtCp UCS, SDR mode (paper white 250 cd/m2, framebuffer 1.0 = 100 cd/m2).
+//
+// MIT License
+//
+// Copyright (c) 2025 Polyphony Digital Inc.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+// ---------------------------------------------------------------------------
+
+// SMPTE ST 2084 (PQ) constants.
+const float GT7_PQ_M1 = 0.1593017578125; // (2610 / 4096) / 4
+const float GT7_PQ_M2 = 78.84375; // (2523 / 4096) * 128
+const float GT7_PQ_C1 = 0.8359375; // 3424 / 4096
+const float GT7_PQ_C2 = 18.8515625; // (2413 / 4096) * 32
+const float GT7_PQ_C3 = 18.6875; // (2392 / 4096) * 32
+// REFERENCE_LUMINANCE (100 cd/m2 <-> 1.0) / PQ max luminance (10000 cd/m2).
+const float GT7_FB_TO_PQ = 0.01;
+
+// SDR: framebufferLuminanceTarget_ = 250 / 100.
+const float GT7_TARGET = 2.5;
+// sdrCorrectionFactor_ = 1 / (250 / 100).
+const float GT7_SDR_CORRECTION = 0.4;
+// I (ICtCp) of RGB (2.5, 2.5, 2.5), i.e. PQ-encoded 250 cd/m2 (framebufferLuminanceTargetUcs_).
+const float GT7_TARGET_UCS = 0.6025591549907524;
+
+// GTToneMappingCurveV2::initializeCurve(2.5, 0.25, 0.538, 0.444, 1.280), precomputed:
+// k = (linearSection - 1) / (alpha - 1)
+// kA = peak * linearSection + peak * k
+// kB = -peak * k * exp(linearSection / k)
+// kC = -1 / (k * peak)
+const float GT7_CURVE_MID_POINT = 0.538;
+const float GT7_CURVE_TOE_STRENGTH = 1.280;
+const float GT7_CURVE_LINEAR_END = 1.11; // linearSection * peakIntensity
+const float GT7_CURVE_KA = 2.963333333333334;
+const float GT7_CURVE_KB = -3.3733512380644313;
+const float GT7_CURVE_KC = -0.539568345323741;
+
+const float GT7_BLEND_RATIO = 0.6;
+const float GT7_FADE_START = 0.98;
+const float GT7_FADE_END = 1.16;
+
+vec3 gt7_evaluate_curve(vec3 x) {
+	x = max(x, vec3(0.0));
+	vec3 weight_linear = smoothstep(vec3(0.0), vec3(GT7_CURVE_MID_POINT), x);
+	vec3 weight_toe = vec3(1.0) - weight_linear;
+	vec3 shoulder = GT7_CURVE_KA + GT7_CURVE_KB * exp(x * GT7_CURVE_KC);
+	vec3 toe_mapped = GT7_CURVE_MID_POINT * pow(x / GT7_CURVE_MID_POINT, vec3(GT7_CURVE_TOE_STRENGTH));
+	vec3 toe_linear = weight_toe * toe_mapped + weight_linear * x;
+	return mix(shoulder, toe_linear, lessThan(x, vec3(GT7_CURVE_LINEAR_END)));
+}
+
+// Framebuffer linear -> PQ signal.
+vec3 gt7_inverse_eotf_pq(vec3 v) {
+	vec3 ym = pow(max(v * GT7_FB_TO_PQ, vec3(0.0)), vec3(GT7_PQ_M1));
+	return pow((GT7_PQ_C1 + GT7_PQ_C2 * ym) / (1.0 + GT7_PQ_C3 * ym), vec3(GT7_PQ_M2));
+}
+
+// PQ signal -> framebuffer linear.
+vec3 gt7_eotf_pq(vec3 n) {
+	n = clamp(n, vec3(0.0), vec3(1.0));
+	vec3 np = pow(n, vec3(1.0 / GT7_PQ_M2));
+	vec3 l = max(np - GT7_PQ_C1, vec3(0.0));
+	l = l / (GT7_PQ_C2 - GT7_PQ_C3 * np);
+	l = pow(l, vec3(1.0 / GT7_PQ_M1));
+	return l * (1.0 / GT7_FB_TO_PQ);
+}
+
+// Linear Rec. 2020 -> PQ-encoded LMS (ITU-T T.302).
+vec3 gt7_rec2020_to_lms_pq(vec3 rgb) {
+	vec3 lms = vec3(
+					   dot(rgb, vec3(1688.0, 2146.0, 262.0)),
+					   dot(rgb, vec3(683.0, 2951.0, 462.0)),
+					   dot(rgb, vec3(99.0, 309.0, 3688.0))) *
+			(1.0 / 4096.0);
+	return gt7_inverse_eotf_pq(lms);
+}
+
+vec3 gt7_lms_pq_to_ictcp(vec3 lms_pq) {
+	return vec3(
+				   dot(lms_pq, vec3(2048.0, 2048.0, 0.0)),
+				   dot(lms_pq, vec3(6610.0, -13613.0, 7003.0)),
+				   dot(lms_pq, vec3(17933.0, -17390.0, -543.0))) *
+			(1.0 / 4096.0);
+}
+
+// ICtCp -> linear Rec. 2020 (non-negative).
+vec3 gt7_ictcp_to_rec2020(vec3 ictcp) {
+	vec3 lms_pq = vec3(
+			dot(ictcp, vec3(1.0, 0.00860904, 0.11103)),
+			dot(ictcp, vec3(1.0, -0.00860904, -0.11103)),
+			dot(ictcp, vec3(1.0, 0.560031, -0.320627)));
+	vec3 lms = gt7_eotf_pq(lms_pq);
+	return max(vec3(
+					   dot(lms, vec3(3.43661, -2.50645, 0.0698454)),
+					   dot(lms, vec3(-0.79133, 1.9836, -0.192271)),
+					   dot(lms, vec3(-0.0259499, -0.0989137, 1.12486))),
+			vec3(0.0));
+}
+
+// Input: linear Rec. 709 (framebuffer 1.0 = 100 cd/m2). Output: linear Rec. 709 in [0, 1].
+vec3 tonemap_gt7(vec3 color) {
+	// GLSL matrices are column-major: each group of three values below is a column.
+	// Rec. 709 -> Rec. 2020, rows:
+	// [0.6274 0.3293 0.0433; 0.0691 0.9195 0.0114; 0.0164 0.0880 0.8956]
+	const mat3 rec709_to_rec2020 = mat3(
+			0.627403895934699, 0.0690972893582614, 0.0163914388751843,
+			0.329283038377884, 0.919540395075459, 0.0880133078772257,
+			0.0433130656874170, 0.0113623155662798, 0.895595253247590);
+	// Rec. 2020 -> Rec. 709, rows:
+	// [1.6605 -0.5876 -0.0728; -0.1246 1.1329 -0.0083; -0.0182 -0.1006 1.1187]
+	const mat3 rec2020_to_rec709 = mat3(
+			1.66049100210843, -0.124550474521591, -0.0181507633549055,
+			-0.587641138788550, 1.13289989712596, -0.100578898008007,
+			-0.0728498633198750, -0.00834942260437215, 1.11872966136291);
+
+	vec3 rgb = max(rec709_to_rec2020 * max(color, vec3(0.0)), vec3(0.0));
+
+	// Convert to UCS to separate luminance and chroma.
+	vec3 ucs = gt7_lms_pq_to_ictcp(gt7_rec2020_to_lms_pq(rgb));
+
+	// Per-channel tone mapping ("skewed" color).
+	vec3 skewed_rgb = gt7_evaluate_curve(rgb);
+	// Only the I (luminance) component of the skewed color's UCS is used.
+	vec3 skewed_lms_pq = gt7_rec2020_to_lms_pq(skewed_rgb);
+	float skewed_i = 0.5 * (skewed_lms_pq.x + skewed_lms_pq.y);
+
+	float chroma_scale = 1.0 - smoothstep(GT7_FADE_START, GT7_FADE_END, ucs.x / GT7_TARGET_UCS);
+	vec3 scaled_rgb = gt7_ictcp_to_rec2020(vec3(skewed_i, ucs.yz * chroma_scale));
+
+	// Final blend between per-channel and UCS-scaled results, then SDR correction.
+	vec3 blended = mix(skewed_rgb, scaled_rgb, GT7_BLEND_RATIO);
+	vec3 result = GT7_SDR_CORRECTION * min(blended, vec3(GT7_TARGET));
+
+	return max(rec2020_to_rec709 * result, vec3(0.0));
+}
+
+// ---------------------------------------------------------------------------
+// Homestead P1: Uchimura-AgX tone mapping.
+// Ported from Toni Macaroni's (Julian Kittel) Godot fork, MIT License,
+// https://github.com/ToniMacaroni/godot commit e0438598 ("agx contrast").
+// Math copied verbatim; helpers and constants renamed with a toni_ prefix.
+// ---------------------------------------------------------------------------
+
+#define TONI_LUMINOSITY_FACTOR vec3(0.2126, 0.7152, 0.0722)
+
+const float toni_uch_maxDisplayBrightness = 1.035;
+const float toni_uch_contrast = 1.823;
+const float toni_uch_linearSectionStart = 0.041;
+const float toni_uch_linearSectionLength = 0.595;
+const float toni_uch_black = 1.027;
+const float toni_uch_pedestal = 0.0;
+
+const float toni_agx_mix = 0.850;
+const float toni_agx_mix_exp = 0.400;
+const float toni_agx_slope = 1.180;
+const float toni_agx_power = 6.468;
+const float toni_agx_sat_dependency = 1.0;
+const float toni_agx_sat = 0.916;
+const float toni_agx_gain = 0.662;
+
+vec3 toni_rgb2hsv(vec3 c) {
+	vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+	vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+	vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+
+	float d = q.x - min(q.w, q.y);
+	float e = 1.0e-10;
+	return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+// Uchimura 2017, "HDR theory and practice"
+// Math: https://www.desmos.com/calculator/gslcdxvipg
+// Source: https://www.slideshare.net/nikuque/hdr-theory-and-practicce-jp
+vec3 toni_uchimura(vec3 x, float P, float a, float m, float l, float c, float b) {
+	float l0 = ((P - m) * l) / a;
+	float S0 = m + l0;
+	float S1 = m + a * l0;
+	float C2 = (a * P) / (P - S1);
+	float CP = -C2 / P;
+
+	vec3 w0 = vec3(1.0 - smoothstep(0.0, m, x));
+	vec3 w2 = vec3(step(m + l0, x));
+	vec3 w1 = vec3(1.0 - w0 - w2);
+
+	vec3 T = vec3(m * pow(x / m, vec3(c)) + b);
+	vec3 S = vec3(P - (P - S1) * exp(CP * (x - S0)));
+	vec3 L = vec3(m + a * (x - m));
+
+	return T * w0 + L * w1 + S * w2;
+}
+
+vec3 toni_uchimura(vec3 x) {
+	const float P = toni_uch_maxDisplayBrightness;
+	const float a = toni_uch_contrast;
+	const float m = toni_uch_linearSectionStart;
+	const float l = toni_uch_linearSectionLength;
+	const float c = toni_uch_black;
+	const float b = toni_uch_pedestal;
+
+	return toni_uchimura(x, P, a, m, l, c, b);
+}
+
+vec3 toni_agxDefaultContrastApprox(vec3 x) {
+	vec3 x2 = x * x;
+	vec3 x4 = x2 * x2;
+
+	return +15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+
+vec3 toni_agxEotf(vec3 val) {
+	const mat3 agx_mat_inv = mat3(
+			1.19687900512017, -0.0528968517574562, -0.0529716355144438,
+			-0.0980208811401368, 1.15190312990417, -0.0980434501171241,
+			-0.0990297440797205, -0.0989611768448433, 1.15107367264116);
+
+	return agx_mat_inv * val;
+}
+
+vec3 toni_agx(vec3 val) {
+	const mat3 agx_mat = mat3(
+			0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+			0.0784335999999992, 0.878468636469772, 0.0784336,
+			0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+
+	const float min_ev = -12.47393f;
+	const float max_ev = 4.026069f;
+
+	val = agx_mat * val;
+
+	val = clamp(log2(val), min_ev, max_ev);
+	val = (val - min_ev) / (max_ev - min_ev);
+
+	val = toni_agxDefaultContrastApprox(val);
+
+	return val;
+}
+
+vec3 toni_agxLook(vec3 val, float luma, vec4 vals, float agxsat) {
+	vec3 offset = vec3(0.0, 0.0, 0.0);
+	vec3 slope = vec3(vals.z, vals.z, vals.z);
+	vec3 power = vec3(vals.w, vals.w, vals.w);
+	float sat = agxsat;
+
+	val = pow(max(vec3(0.0), val * slope + offset), power);
+	return luma + sat * (val - luma);
+}
+
+vec3 tonemap_uchimura_agx(vec3 x) {
+	x = pow(max(vec3(0.0), x * 1.075), vec3(1.025));
+
+	vec3 hsv = toni_rgb2hsv(x);
+
+	float luma = clamp(dot(x, TONI_LUMINOSITY_FACTOR), 0.0, 1.0);
+
+	vec3 col = toni_agx(x);
+	col = toni_agxLook(col, luma, vec4(toni_agx_mix, toni_agx_mix_exp, toni_agx_slope, toni_agx_power), toni_agx_sat);
+	col = toni_agxEotf(col);
+
+	x = mix(x, col, toni_agx_mix * pow(luma, toni_agx_mix_exp) * sqrt(1.0 - toni_agx_sat_dependency * clamp(hsv.y, 0.0, 1.0)));
+
+	x *= toni_agx_gain;
+	x = toni_uchimura(x);
+
+	return x;
+}
+
 #define TONEMAPPER_LINEAR 0
 #define TONEMAPPER_REINHARD 1
 #define TONEMAPPER_FILMIC 2
 #define TONEMAPPER_ACES 3
 #define TONEMAPPER_AGX 4
+#define TONEMAPPER_GT7 5
+#define TONEMAPPER_UCHIMURA_AGX 6
 
 vec3 apply_tonemapping(vec3 color) { // inputs are LINEAR
 	if (params.tonemapper == TONEMAPPER_LINEAR) {
@@ -258,7 +546,11 @@ vec3 apply_tonemapping(vec3 color) { // inputs are LINEAR
 		return tonemap_filmic(color);
 	} else if (params.tonemapper == TONEMAPPER_ACES) {
 		return tonemap_aces(color);
-	} else { // TONEMAPPER_AGX
+	} else if (params.tonemapper == TONEMAPPER_GT7) {
+		return tonemap_gt7(color);
+	} else if (params.tonemapper == TONEMAPPER_UCHIMURA_AGX) {
+		return tonemap_uchimura_agx(color);
+	} else { // TONEMAPPER_AGX (also the fallback default)
 		return tonemap_agx(color);
 	}
 }
