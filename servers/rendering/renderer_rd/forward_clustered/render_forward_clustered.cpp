@@ -433,6 +433,9 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 		pipeline_specialization.multimesh_has_color = bool(surf->owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_COLOR);
 		pipeline_specialization.multimesh_has_custom_data = bool(surf->owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_HAS_CUSTOM_DATA);
 		pipeline_specialization.material_feedback = p_params->use_material_feedback && surf->material->material_feedback_rid.is_valid();
+		if constexpr (p_pass_mode == PASS_MODE_COLOR && (p_color_pass_flags & COLOR_PASS_FLAG_TRANSPARENT) != 0) {
+			pipeline_specialization.prepass_alpha_test = 0; // Homestead P5: transparent surfaces were not in the prepass.
+		}
 
 		if constexpr (p_pass_mode == PASS_MODE_COLOR) {
 			pipeline_specialization.use_light_soft_shadows = element_info.uses_softshadow;
@@ -960,6 +963,9 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 	RenderList *rl = &render_list[p_render_list];
 	_update_dirty_geometry_instances();
 
+	// Homestead P5: with the prepass alpha test, alpha-to-coverage cut-outs are drawn in the opaque colour pass.
+	const bool prepass_cutouts_opaque = p_pass_mode == PASS_MODE_COLOR && _prepass_alpha_test_active();
+
 	if (!p_append) {
 		rl->clear();
 		if (p_render_list == RENDER_LIST_OPAQUE) {
@@ -1169,7 +1175,8 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 					rl->add_element(surf);
 				}
 
-				if (force_alpha || (surf->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA)) {
+				const bool cutout_opaque = prepass_cutouts_opaque && (surf->flags & GeometryInstanceSurfaceDataCache::FLAG_PREPASS_CUTOUT);
+				if (force_alpha || ((surf->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA) && !cutout_opaque)) {
 					surf->color_pass_inclusion_mask = COLOR_PASS_FLAG_TRANSPARENT;
 					render_list[RENDER_LIST_ALPHA].add_element(surf);
 					if (uses_gi) {
@@ -2209,6 +2216,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	SceneShaderForwardClustered::ShaderSpecialization base_specialization = scene_shader.default_specialization;
 	base_specialization.use_depth_fog = p_render_data->environment.is_valid() && environment_get_fog_mode(p_render_data->environment) == RSE::EnvironmentFogMode::ENV_FOG_MODE_DEPTH;
+	// Homestead P5: the prepass does the alpha test (alpha-to-coverage as a sample mask), the opaque pass skips it.
+	base_specialization.prepass_alpha_test = depth_pre_pass && scene_shader.depth_prepass_enabled && _prepass_alpha_test_active();
 
 	bool using_ssao = depth_pre_pass && !is_reflection_probe && p_render_data->environment.is_valid() && environment_get_ssao_enabled(p_render_data->environment);
 
@@ -4270,6 +4279,11 @@ void RenderForwardClustered::GeometryInstanceForwardClustered::_mark_dirty() {
 	RenderForwardClustered::get_singleton()->geometry_instance_dirty_list.add(&dirty_list_element);
 }
 
+bool RenderForwardClustered::_prepass_alpha_test_active() const {
+	// Homestead P5: read every frame so the game can switch it at runtime (A/B); shaders only add early depth tests at startup.
+	return scene_shader.depth_prepass_enabled && GLOBAL_GET_CACHED(bool, "rendering/homestead/prepass_alpha_test");
+}
+
 void RenderForwardClustered::_update_global_pipeline_data_requirements_from_project() {
 	const int msaa_3d_mode = GLOBAL_GET_CACHED(int, "rendering/anti_aliasing/quality/msaa_3d");
 	const bool directional_shadow_16_bits = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/directional_shadow/16_bits");
@@ -4322,6 +4336,9 @@ void RenderForwardClustered::_geometry_instance_add_surface_with_material(Geomet
 		if (p_material->shader_data->uses_depth_in_alpha_pass()) {
 			flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH;
 			flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_SHADOW;
+			if (p_material->shader_data->prepass_cutout) {
+				flags |= GeometryInstanceSurfaceDataCache::FLAG_PREPASS_CUTOUT;
+			}
 		}
 	} else {
 		flags |= GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE;

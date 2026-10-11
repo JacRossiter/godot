@@ -896,8 +896,21 @@ void main() {
 
 #if !defined(DEPTH_USED) && (!defined(TEXTURE_STREAMING_MAY_DISCARD) || (defined(TEXTURE_STREAMING_NO_DEPTH_WRITE) && !defined(STENCIL_WRITE_USED)))
 layout(early_fragment_tests) in;
+#define EARLY_FRAGMENT_TESTS_DECLARED
 #endif
 #endif // TEXTURE_STREAMING
+
+// Homestead P5: with the depth prepass the colour pass never writes depth (opaque: EQUAL against the prepass;
+// transparent: depth_draw_opaque), so its depth test can always run before the shader, even when it may discard.
+#if defined(HOMESTEAD_PREPASS_ALPHA_TEST) && !defined(MODE_RENDER_DEPTH) && !defined(EARLY_FRAGMENT_TESTS_DECLARED) && !defined(DEPTH_USED) && !defined(DEPTH_DRAW_ALWAYS_USED) && !defined(STENCIL_WRITE_USED)
+layout(early_fragment_tests) in;
+#endif
+
+// Homestead P5: alpha-to-coverage cut-outs write their coverage as a sample mask in the depth prepass
+// (gl_SampleMask is a built-in output: it needs no color attachment, see RenderingShaderContainer reflection).
+#if defined(MODE_RENDER_DEPTH) && defined(ALPHA_ANTIALIASING_EDGE_USED) && !defined(MODE_RENDER_MATERIAL) && !defined(MODE_RENDER_SDF) && !defined(USE_OPAQUE_PREPASS) && !defined(USE_SHADOW_TO_OPACITY)
+#define PREPASS_SAMPLE_MASK_USED
+#endif
 
 layout(location = 0) in vec3 vertex_interp;
 
@@ -1353,7 +1366,12 @@ void fragment_shader(in SceneData scene_data) {
 		alpha = 1.0;
 	}
 #else
-	if (alpha < alpha_scissor_threshold) {
+	// Homestead P5: the opaque colour pass inherits the prepass alpha test through its EQUAL depth test.
+	if (alpha < alpha_scissor_threshold
+#ifndef MODE_RENDER_DEPTH
+			&& !sc_prepass_alpha_test()
+#endif
+	) {
 		discard;
 	}
 #endif // MODE_RENDER_MATERIAL
@@ -1414,7 +1432,11 @@ void fragment_shader(in SceneData scene_data) {
 		alpha = 1.0;
 	}
 #else
-	if (alpha < compute_alpha_hash_threshold(object_pos, alpha_hash_scale)) {
+	if (alpha < compute_alpha_hash_threshold(object_pos, alpha_hash_scale)
+#ifndef MODE_RENDER_DEPTH
+			&& !sc_prepass_alpha_test()
+#endif
+	) {
 		discard;
 	}
 #endif // MODE_RENDER_MATERIAL
@@ -1431,11 +1453,28 @@ void fragment_shader(in SceneData scene_data) {
 	alpha_antialiasing_edge = clamp(alpha_scissor_threshold + alpha_antialiasing_edge, 0.0, 1.0);
 #endif
 	alpha = compute_alpha_antialiasing_edge(alpha, alpha_texture_coordinate, alpha_antialiasing_edge);
+#ifndef MODE_RENDER_DEPTH
+	if (sc_prepass_alpha_test()) {
+		// Homestead P5: coverage came from the prepass sample mask; the depth test applies it per sample.
+		alpha = 1.0;
+	}
+#endif
 #endif // ALPHA_ANTIALIASING_EDGE_USED
 
 #ifdef MODE_RENDER_DEPTH
 #if defined(USE_OPAQUE_PREPASS) || defined(ALPHA_ANTIALIASING_EDGE_USED)
-	if (alpha < scene_data.opaque_prepass_threshold) {
+#ifdef PREPASS_SAMPLE_MASK_USED
+	if (sc_prepass_alpha_test()) {
+		// Homestead P5: alpha-to-coverage in the depth prepass. The colour pass then shades exactly these samples
+		// (EQUAL depth test, no blending, no discard), so cut-out edges keep their MSAA feathering.
+		uint coverage = uint(clamp(alpha, 0.0, 1.0) * float(sc_msaa_samples) + 0.5);
+		if (coverage == 0U) {
+			discard;
+		}
+		gl_SampleMask[0] = coverage >= 32U ? -1 : int((1U << coverage) - 1U);
+	} else
+#endif // PREPASS_SAMPLE_MASK_USED
+			if (alpha < scene_data.opaque_prepass_threshold) {
 		discard;
 	}
 #endif // USE_OPAQUE_PREPASS || ALPHA_ANTIALIASING_EDGE_USED
@@ -3235,6 +3274,10 @@ void main() {
 	if (dp_clip > 0.0) {
 		discard;
 	}
+#endif
+
+#ifdef PREPASS_SAMPLE_MASK_USED
+	gl_SampleMask[0] = -1; // Homestead P5: written on every path; fragment_shader() narrows it in the prepass.
 #endif
 
 	fragment_shader(scene_data_block.data);

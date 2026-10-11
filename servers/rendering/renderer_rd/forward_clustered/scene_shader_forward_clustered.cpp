@@ -83,6 +83,8 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	uses_world_coordinates = false;
 	uses_particle_trails = false;
 	uses_z_clip_scale = false;
+	uses_shadow_to_opacity = false;
+	prepass_cutout = false;
 
 	int depth_drawi = DEPTH_DRAW_OPAQUE;
 
@@ -121,6 +123,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	actions.render_mode_flags["wireframe"] = &wireframe;
 	actions.render_mode_flags["particle_trails"] = &uses_particle_trails;
 	actions.render_mode_flags["world_vertex_coords"] = &uses_world_coordinates;
+	actions.render_mode_flags["shadow_to_opacity"] = &uses_shadow_to_opacity;
 
 	actions.usage_flag_pointers["ALPHA"] = &uses_alpha;
 	actions.usage_flag_pointers["ALPHA_SCISSOR_THRESHOLD"] = &uses_alpha_clip;
@@ -238,6 +241,12 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	texture_uniforms = gen_code.texture_uniforms;
 
 	pipeline_hash_map.clear_pipelines();
+
+	// Homestead P5: an alpha-to-coverage cut-out has no real blending, so the prepass alpha test can draw it as opaque.
+	{
+		const bool has_read_screen_alpha = uses_screen_texture || uses_depth_texture || uses_normal_texture;
+		prepass_cutout = alpha_antialiasing_mode != ALPHA_ANTIALIASING_OFF && blend_mode == BLEND_MODE_MIX && uses_alpha_antialiasing && !uses_depth_prepass_alpha && !has_read_screen_alpha && !stencil_enabled && !uses_shadow_to_opacity && depth_draw == DEPTH_DRAW_OPAQUE && depth_test == DEPTH_TEST_ENABLED;
+	}
 
 	// If any form of Alpha Antialiasing is enabled, set the blend mode to alpha to coverage.
 	if (alpha_antialiasing_mode != ALPHA_ANTIALIASING_OFF) {
@@ -499,6 +508,13 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 	sc.type = RD::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_BOOL;
 	specialization_constants.push_back(sc);
 
+	// Homestead P5: the depth prepass turns alpha-to-coverage into a sample mask, so it needs the sample count.
+	sc = {};
+	sc.constant_id = 3;
+	sc.int_value = 1u << uint32_t(multisample_state.sample_count);
+	sc.type = RD::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_INT;
+	specialization_constants.push_back(sc);
+
 	RID shader_rid = get_shader_variant(p_pipeline_key.version, p_pipeline_key.color_pass_flags, p_pipeline_key.ubershader);
 	ERR_FAIL_COND(shader_rid.is_null());
 
@@ -643,6 +659,12 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 	emulate_point_size = !RD::get_singleton()->has_feature(RD::SUPPORTS_POINT_SIZE);
 
 	depth_prepass_enabled = GLOBAL_GET("rendering/driver/depth_prepass/enable");
+	prepass_alpha_test_enabled = depth_prepass_enabled && bool(GLOBAL_GET("rendering/homestead/prepass_alpha_test"));
+
+	String defines = p_defines;
+	if (prepass_alpha_test_enabled) {
+		defines += "\n#define HOMESTEAD_PREPASS_ALPHA_TEST\n";
+	}
 
 	{
 		Vector<ShaderRD::VariantDefine> shader_versions;
@@ -692,7 +714,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 
 		Vector<uint64_t> dynamic_buffers;
 		dynamic_buffers.push_back(ShaderRD::DynamicBuffer::encode(RenderForwardClustered::RENDER_PASS_UNIFORM_SET, 2));
-		shader.initialize(shader_versions, p_defines, Vector<RD::PipelineImmutableSampler>(), dynamic_buffers);
+		shader.initialize(shader_versions, defines, Vector<RD::PipelineImmutableSampler>(), dynamic_buffers);
 
 		if (RendererCompositorRD::get_singleton()->is_xr_enabled()) {
 			shader.enable_group(SHADER_GROUP_MULTIVIEW);
@@ -744,7 +766,10 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.renames["E"] = String::num(Math::E);
 		actions.renames["OUTPUT_IS_SRGB"] = "SHADER_IS_SRGB";
 		actions.renames["CLIP_SPACE_FAR"] = "SHADER_SPACE_FAR";
-		actions.renames["IN_SHADOW_PASS"] = "bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_IN_SHADOW_PASS)";
+		// Homestead P5: both are compile-time constants outside depth variants, so `if (!IN_DEPTH_PASS)` strips heavy
+		// colour-only work from shadow and prepass shaders even where the driver can't prove it dead (loops, side effects).
+		actions.renames["IN_SHADOW_PASS"] = "HS_IN_SHADOW_PASS";
+		actions.renames["IN_DEPTH_PASS"] = "HS_IN_DEPTH_PASS";
 		actions.renames["VIEWPORT_SIZE"] = "read_viewport_size";
 
 		actions.renames["FRAGCOORD"] = "gl_FragCoord";

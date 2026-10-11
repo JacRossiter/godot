@@ -154,12 +154,20 @@ bool sc_material_feedback() {
 	return ((sc_packed_1() >> 7) & 1U) != 0;
 }
 
+// Homestead P5: alpha test only in the depth prepass (see ShaderSpecialization::prepass_alpha_test).
+bool sc_prepass_alpha_test() {
+	return ((sc_packed_1() >> 8) & 1U) != 0;
+}
+
 float sc_luminance_multiplier() {
 	// Not used in clustered renderer but we share some code with the mobile renderer that requires this.
 	return 1.0;
 }
 
 layout(constant_id = 2) const bool sc_emulate_point_size = false;
+
+// Homestead P5: MSAA sample count of the target, for the prepass alpha-to-coverage sample mask.
+layout(constant_id = 3) const uint sc_msaa_samples = 1;
 
 #ifdef POINT_SIZE_USED
 
@@ -325,6 +333,15 @@ layout(set = 1, binding = 0, std140) uniform SceneDataBlock {
 	SceneData prev_data;
 }
 scene_data_block;
+
+// Homestead P5: compile-time pass built-ins, so colour-only work under `if (!IN_DEPTH_PASS)` is stripped from depth variants.
+#ifdef MODE_RENDER_DEPTH
+#define HS_IN_DEPTH_PASS true
+#define HS_IN_SHADOW_PASS bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_IN_SHADOW_PASS)
+#else
+#define HS_IN_DEPTH_PASS false
+#define HS_IN_SHADOW_PASS false
+#endif
 
 struct ImplementationData {
 	uint cluster_shift;

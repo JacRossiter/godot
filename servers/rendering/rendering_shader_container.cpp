@@ -631,7 +631,9 @@ Error RenderingShaderContainer::reflect_spirv(const String &p_shader_name, Span<
 						if (!refvar) {
 							continue;
 						}
-						if (refvar->built_in != SpvBuiltInFragDepth) {
+						// Built-in outputs (FragDepth, SampleMask, ...) have no location and no color attachment.
+						// Homestead P5: SampleMask used to set bit 31 and fail every depth-only pipeline.
+						if (!(refvar->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN)) {
 							reflection.fragment_output_mask |= 1 << refvar->location;
 						}
 					}

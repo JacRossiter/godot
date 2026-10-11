@@ -130,6 +130,10 @@ public:
 				uint32_t cluster_has_area_light : 1;
 				uint32_t use_lightmap_specular : 1;
 				uint32_t material_feedback : 1;
+				// Homestead P5: alpha test only in the depth prepass. Set on the main depth prepass and the opaque colour pass when
+				// `rendering/homestead/prepass_alpha_test` is on and the prepass ran: depth variants write alpha-to-coverage as a
+				// sample mask, the colour pass skips the alpha test (its depth test is EQUAL against the prepass).
+				uint32_t prepass_alpha_test : 1;
 			};
 		};
 
@@ -271,6 +275,10 @@ public:
 		bool uses_world_coordinates = false;
 		bool uses_screen_texture_mipmaps = false;
 		bool uses_z_clip_scale = false;
+		bool uses_shadow_to_opacity = false;
+		// Homestead P5: an alpha-to-coverage cut-out (alpha scissor/edge with blend_mix): no real blending, so with the prepass
+		// alpha test it is drawn in the opaque colour pass, with its coverage taken from the prepass depth.
+		bool prepass_cutout = false;
 		RSE::CullMode cull_mode = RSE::CULL_MODE_DISABLED;
 
 		bool stencil_enabled = false;
@@ -350,6 +358,7 @@ public:
 	ShaderCompiler compiler;
 	bool emulate_point_size = false;
 	bool depth_prepass_enabled = false;
+	bool prepass_alpha_test_enabled = false; // Homestead P5: `rendering/homestead/prepass_alpha_test` at startup (shader defines).
 
 	RID default_shader;
 	RID default_material;

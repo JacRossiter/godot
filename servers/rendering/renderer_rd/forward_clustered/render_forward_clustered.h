@@ -486,6 +486,8 @@ private:
 	static_assert(std::is_trivially_destructible_v<RenderElementInfo>);
 	static_assert(std::is_trivially_constructible_v<RenderElementInfo>);
 
+	bool _prepass_alpha_test_active() const; // Homestead P5.
+
 	template <PassMode p_pass_mode, uint32_t p_color_pass_flags = 0>
 	_FORCE_INLINE_ void _render_list_template(RenderingDevice::DrawListID p_draw_list, RenderingDevice::FramebufferFormatID p_framebuffer_Format, RenderListParameters *p_params, uint32_t p_from_element, uint32_t p_to_element);
 	void _render_list(RenderingDevice::DrawListID p_draw_list, RenderingDevice::FramebufferFormatID p_framebuffer_Format, RenderListParameters *p_params, uint32_t p_from_element, uint32_t p_to_element);
@@ -519,6 +521,7 @@ private:
 			FLAG_USES_PARTICLE_TRAILS = 65536,
 			FLAG_USES_MOTION_VECTOR = 131072,
 			FLAG_USES_STENCIL = 262144,
+			FLAG_PREPASS_CUTOUT = 524288, // Homestead P5: see SceneShaderForwardClustered::ShaderData::prepass_cutout.
 		};
 
 		union {
