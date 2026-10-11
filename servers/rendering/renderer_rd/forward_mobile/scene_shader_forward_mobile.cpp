@@ -709,6 +709,8 @@ void SceneShaderForwardMobile::init(const String p_defines) {
 		actions.renames["BACKLIGHT"] = "backlight_highp";
 		actions.renames["AO"] = "ao_highp";
 		actions.renames["AO_LIGHT_AFFECT"] = "ao_light_affect_highp";
+		actions.renames["SSAO_STRENGTH"] = "ssao_strength"; // Homestead P9.
+		actions.renames["SSIL_STRENGTH"] = "ssil_strength";
 		actions.renames["MICRO_SHADOWS"] = "micro_shadows_highp";
 		actions.renames["EMISSION"] = "emission_highp";
 		actions.renames["POINT_COORD"] = "point_coord";

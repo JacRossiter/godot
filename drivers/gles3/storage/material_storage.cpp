@@ -1322,6 +1322,8 @@ MaterialStorage::MaterialStorage() {
 		actions.renames["BACKLIGHT"] = "backlight";
 		actions.renames["AO"] = "ao";
 		actions.renames["AO_LIGHT_AFFECT"] = "ao_light_affect";
+		actions.renames["SSAO_STRENGTH"] = "ssao_strength"; // Homestead P9.
+		actions.renames["SSIL_STRENGTH"] = "ssil_strength";
 		actions.renames["MICRO_SHADOWS"] = "micro_shadows";
 		actions.renames["EMISSION"] = "emission";
 		actions.renames["POINT_COORD"] = "gl_PointCoord";

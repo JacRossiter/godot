@@ -174,6 +174,8 @@ HashMap<String, String> TextShaderPreview::builtin_spatial_types = {
 	{ "SSS_TRANSMITTANCE_BOOST", "float" },
 	{ "AO", "float" },
 	{ "AO_LIGHT_AFFECT", "float" },
+	{ "SSAO_STRENGTH", "float" },
+	{ "SSIL_STRENGTH", "float" },
 
 	{ "ALPHA_TEXTURE_COORDINATE", "vec2" },
 	{ "ANISOTROPY_FLOW", "vec2" },

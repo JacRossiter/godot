@@ -1225,6 +1225,8 @@ void fragment_shader(in SceneData scene_data) {
 	float direct_ao = 0.0;
 	float ao_light_affect = 0.0;
 	float micro_shadows = 0.0;
+	float ssao_strength = 1.0; // Homestead P9: per-material SSAO_STRENGTH / SSIL_STRENGTH.
+	float ssil_strength = 1.0;
 
 	float alpha_highp = float(instances.data[instance_index].flags >> INSTANCE_FLAGS_FADE_SHIFT) / float(255.0);
 
@@ -2144,7 +2146,7 @@ void fragment_shader(in SceneData scene_data) {
 #else
 		float ssao = texture(sampler2D(ao_buffer, SAMPLER_LINEAR_CLAMP), screen_uv).r;
 #endif
-		ao = min(ao, ssao);
+		ao = min(ao, mix(1.0, ssao, clamp(ssao_strength, 0.0, 1.0))); // Homestead P9: per-material strength.
 		ao_light_affect = mix(ao_light_affect, max(ao_light_affect, implementation_data.ssao_light_affect), implementation_data.ssao_ao_affect);
 	}
 
@@ -2316,8 +2318,9 @@ void fragment_shader(in SceneData scene_data) {
 #else
 			vec4 ssil = textureLod(sampler2D(ssil_buffer, SAMPLER_LINEAR_CLAMP), screen_uv, 0.0);
 #endif // USE_MULTIVIEW
-			ambient_light *= ssil.a;
-			ambient_light += ssil.rgb * albedo.rgb;
+			float ssil_s = clamp(ssil_strength, 0.0, 1.0); // Homestead P9: per-material strength.
+			ambient_light *= mix(1.0, ssil.a, ssil_s);
+			ambient_light += ssil.rgb * albedo.rgb * ssil_s;
 		}
 
 		//process ssr

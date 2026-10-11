@@ -1151,6 +1151,8 @@ void main() {
 	float ao_highp = 1.0;
 	float ao_light_affect_highp = 0.0;
 	float micro_shadows_highp = 0.0;
+	float ssao_strength = 1.0; // Homestead P9: SSAO_STRENGTH / SSIL_STRENGTH (no screen-space AO/IL in Mobile).
+	float ssil_strength = 1.0;
 
 	float alpha_highp = 1.0;
 

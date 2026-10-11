@@ -2309,6 +2309,8 @@ void main() {
 	float direct_ao = 0.0;
 	float ao_light_affect = 0.0;
 	float micro_shadows = 0.0;
+	float ssao_strength = 1.0; // Homestead P9: per-material SSAO_STRENGTH / SSIL_STRENGTH.
+	float ssil_strength = 1.0;
 
 	float alpha = 1.0;
 
